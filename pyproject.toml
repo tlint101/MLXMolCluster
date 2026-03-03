@@ -3,7 +3,7 @@ name = "mcluster"
 version = "0.0.1"
 description = ""
 authors = [{ name = "Tony Eight Lin" }]
-license = { text = "MIT", file = "LICENSE" }
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
