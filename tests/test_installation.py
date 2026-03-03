@@ -11,7 +11,7 @@ DATA_PATH = BASE_DIR / "tutorial" / "dataset" / "chembl-33-natural-products-subs
 # script adapted from tutorial to check if it installs and runs
 def test():
     # load molecules
-    df = pd.read_csv(filepath_or_buffer="DATA_PATH", sep='\t', names=['smiles'], header=None)
+    df = pd.read_csv(filepath_or_buffer=DATA_PATH, sep='\t', names=['smiles'], header=None)
 
     # take first 10_000 molecules
     smi_list = df['smiles'][:10_000].tolist()
