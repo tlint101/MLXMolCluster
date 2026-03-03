@@ -1,5 +1,5 @@
 [![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg?logo=python&logoColor=white)](https://github.com/tlint101/MLXMolCluster)
-[![MLX](https://img.shields.io/badge/MLX-0.30.0+-black?logo=apple&labelColor=gray)](https://github.com/ml-explore/mlx)
+[![MLX](https://img.shields.io/badge/MLX-0.31.0+-black?logo=apple&labelColor=gray)](https://github.com/ml-explore/mlx)
 
 # MLXMolCluster
 
