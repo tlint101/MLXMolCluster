@@ -1,4 +1,4 @@
-name: MLXMolCluser Test
+name: MLXMolCluster Test
 on:
   push:
     branches: [ "main", "master" ]
