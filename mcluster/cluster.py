@@ -2,7 +2,6 @@ import numpy as np
 import mlx.core as mx
 from rdkit.ML.Cluster import Butina
 from typing import Optional
-import rdkit
 
 
 def fp_to_mlx(fp: list) -> mx.array:
@@ -60,11 +59,10 @@ def get_tanimoto(fps: Optional[mx.array] = None, chunk_size: int = 5000, matrix:
     return np.concatenate(results)
 
 
-def butina(fingerprints: list[rdkit.DataStructs.cDataStructs.ExplicitBitVect] = None, cutoff: float = 0.2,
-           chunk_size: int = 5000) -> mx.array:
+def butina(fingerprints: mx.array = None, cutoff: float = 0.2, chunk_size: int = 5000) -> list:
     """
     Cluster fingerprints.
-    :param fingerprints: list[rdkit.DataStructs.cDataStructs.ExplicitBitVect]
+    :param fingerprints: mx.array
         A list of RDKit molecular fingerprints.
     :param cutoff: float
         Set the cluster threshold.
