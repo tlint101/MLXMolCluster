@@ -16,7 +16,7 @@ Examples have been written and can be found [here](tutorial).
 ## Installation
 Clone and install locally:
 ```python
-pip install https://github.com/tlint101/MLXMolCluster.git
+pip install git+https://github.com/tlint101/MLXMolCluster.git
 ```
 
 ## Example
