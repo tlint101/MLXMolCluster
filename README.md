@@ -39,4 +39,7 @@ A speed comparison can be seen at the [tutorial section](tutorial). The runs wer
 
 **NOTE:** The figure can be misleading. The figure shows the clustering speed of already generated molecular 
 fingerprints. The main bottleneck of clustering remains on the generation of molecular fingerprints. This is done on the 
-CPU before being converted to the GPU. Depending on the number of molecules, this can be time intensive. 
+CPU before being converted to the GPU. Depending on the number of molecules, this can be time intensive.
+
+### Additional
+Collaborations are welcome!
