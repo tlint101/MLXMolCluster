@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
-from mcluster import fp_to_mlx, get_tanimoto, butina, KMeans
+from mlx_cluster import fp_to_mlx, get_tanimoto, butina, KMeans
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "tutorial" / "dataset" / "chembl-33-natural-products-subset.smi"
