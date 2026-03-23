@@ -14,7 +14,11 @@ Additional clustering methods will be added over time.
 Examples have been written and can be found [here](tutorial). 
 
 ## Installation
-Clone and install locally:
+Install from PyPI:
+```python
+pip install mlx-mol-cluster
+```
+Or install directly from the GitHub repository:
 ```python
 pip install git+https://github.com/tlint101/MLXMolCluster.git
 ```
