@@ -1,6 +1,6 @@
 [project]
-name = "mcluster"
-version = "0.0.1"
+name = "mlx-mol-cluster"
+version = "0.1.0"
 description = ""
 authors = [{ name = "Tony Eight Lin" }]
 license = "MIT"
