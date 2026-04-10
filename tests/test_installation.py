@@ -1,8 +1,6 @@
 import pandas as pd
 from pathlib import Path
-from rdkit import Chem
-from rdkit.Chem import rdFingerprintGenerator
-from mlx_cluster import fp_to_mlx, get_tanimoto, butina, KMeans
+from mlx_cluster import fp_to_mlx, get_tanimoto, butina, KMeans, FPGenerator
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_PATH = BASE_DIR / "tutorial" / "dataset" / "chembl-33-natural-products-subset.smi"
@@ -16,14 +14,11 @@ def test():
     # take first 10_000 molecules
     smi_list = df['smiles'][:10_000].tolist()
 
-    # convert smi into RDKit object
-    mol_list = [Chem.MolFromSmiles(smi) for smi in smi_list]
-
-    # set rdkit fingerprint generator
-    fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(fpSize=1024)
     # calculate rdkit fingerprint
-    rdkit_fps = [fp_gen.GetFingerprint(mol) for mol in mol_list]
+    fp_gen = FPGenerator(smi_list)
+    rdkit_fps = fp_gen.fingerprint(type='rdkit', nbits=1024, n_cpu=10)
 
+    # convert to mlx
     mlx_fp = fp_to_mlx(rdkit_fps)
 
     # tanimoto
