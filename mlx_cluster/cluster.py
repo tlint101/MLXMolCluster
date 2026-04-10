@@ -1,14 +1,15 @@
+import warnings
 import numpy as np
 import mlx.core as mx
 from rdkit.ML.Cluster import Butina
-from typing import Optional
+from typing import Optional, Union
 
 
-def fp_to_mlx(fp: list) -> mx.array:
+def fp_to_mlx(fp: Union[list, np.array]) -> mx.array:
     """
     Convert a list of fingerprints into MLX array
-    :param fp: list
-        A list of molecular fingerprints calcualted using RDKit.
+    :param fp: Union[list, np.array]
+        A list of molecular fingerprints calculated using RDKit.
     :return:
     """
     # convert list to array then to mx.array
@@ -17,20 +18,31 @@ def fp_to_mlx(fp: list) -> mx.array:
     return fp_array
 
 
-def get_tanimoto(fps: Optional[mx.array] = None, chunk_size: int = 5000, matrix: bool = False):
+def get_tanimoto(fps: Optional[mx.array] = None, chunk_size: int = 5000, output: str = "array"):
     """"
     Calculate Tanimoto similarity score between an mx.array of molecules.
     fps: Optional[mx.array]
         An mx.array of molecular fingerprints.
     chunk_size: int
         The number of chunks to process keep under GPU buffer limits.
-    matrix: bool
-        Whether to output a matrix or a flattened np.array.
+    output: str
+        Determine the type of output given. Only three str type can be used: "array" will output the results as a
+        flattened array, "matrix" will output the results as an np.array aligned in a matrix, and "avg" or "average"
+        will output the average Tanimoto Similarity score for the given dataset.
     """
+    global total_sim_sum, results, row_idx
     n = fps.shape[0]
+    # input check
+    if n < 2:
+        raise ValueError("Need at least 2 fingerprints to calculate Tanimoto similarity!")
+
     bits_set = mx.sum(fps, axis=1, keepdims=True)
 
-    results = []
+    # hold outputs
+    if output == "array" or output == "matrix":
+        results = []
+    elif output == "average" or output == "avg":
+        total_sim_sum = 0.0
 
     # process by chunks
     for i in range(0, n, chunk_size):
@@ -46,17 +58,34 @@ def get_tanimoto(fps: Optional[mx.array] = None, chunk_size: int = 5000, matrix:
         tanimoto_sim = intersections / (union + 1e-7)
         dist_chunk = 1.0 - tanimoto_sim
 
-        if matrix is not True:
+        if output == "array":
             # only keep lower triangle
             for row_idx in range(i, end_i):
                 # row in the distance chunk is (row_idx - i)
                 actual_row = dist_chunk[row_idx - i, :row_idx]
                 results.append(np.array(actual_row))  # move to CPU/NumPy
-        else:
-            results.append(dist_chunk)
+        elif output == "matrix":
+            results.append(np.array(dist_chunk))  # move to CPU/NumPy
+        elif output == "average" or output == "avg":
+            for row_idx in range(i, end_i):
+                # row in the distance chunk is (row_idx - i)
+                actual_row = tanimoto_sim[row_idx - i, :row_idx]
 
-    # convert into numpy array
-    return np.concatenate(results)
+                # Sum the row and pull it out of the MLX graph into a standard float
+                total_sim_sum += mx.sum(actual_row).item()
+        else:
+            raise ValueError("Unknown output type! Can only be 'array', 'matrix', or 'average' or 'avg'!")
+
+    # final outputs
+    if output == "array":
+        # convert into numpy array
+        return np.concatenate(results)
+    elif output == "average" or output == "avg":
+        total_pairs = (n * (n - 1)) / 2
+        avg_sim = total_sim_sum / total_pairs
+        return avg_sim
+    elif output == "matrix":
+        return np.concatenate(results)
 
 
 def butina(fingerprints: mx.array = None, cutoff: float = 0.2, chunk_size: int = 5000) -> list:
@@ -71,7 +100,7 @@ def butina(fingerprints: mx.array = None, cutoff: float = 0.2, chunk_size: int =
     :return:
     """
     # tanimoto matrix
-    distance_matrix = get_tanimoto(fingerprints, chunk_size=chunk_size, matrix=False)
+    distance_matrix = get_tanimoto(fingerprints, chunk_size=chunk_size, output='matrix')
     # cluster
     clusters = Butina.ClusterData(distance_matrix, len(fingerprints), cutoff, isDistData=True)
     clusters = sorted(clusters, key=len, reverse=True)
@@ -243,6 +272,7 @@ class DBSCAN:
         self.metric = metric
         self.chunk_size = chunk_size
         self.labels_ = None
+        warnings.warn("WARNING: Class DBSCAN() not ready for prime time!")
 
     def fit(self, X: mx.array):
         n_samples = X.shape[0]
@@ -268,7 +298,7 @@ class DBSCAN:
             stack = [i]
             while stack:
                 curr = stack.pop()
-                # get neighbors usign boolean mask
+                # get neighbors using boolean mask
                 neighbors = np.where(adj_np[curr])[0]
                 for neighbor in neighbors:
                     if self.labels_[neighbor] == -1:
@@ -281,7 +311,7 @@ class DBSCAN:
     def _compute_distances(self, X: mx.array):
         """vectorized distance calculation on mlx."""
         if self.metric == "tanimoto":
-            return get_tanimoto(fps=X, chunk_size=self.chunk_size, matrix=True)
+            return get_tanimoto(fps=X, chunk_size=self.chunk_size, output=True)
         elif self.metric == "euclidean":
             # optimized L2: sqrt(sum(x^2) + sum(y^2) - 2 * x.T * y)
             sq_norms = mx.sum(X ** 2, axis=1, keepdims=True)
