@@ -1,4 +1,4 @@
-[![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg?logo=python&logoColor=white)](https://github.com/tlint101/MLXMolCluster)
+[![Python Versions](https://img.shields.io/badge/python-3.11+-blue.svg?logo=python&logoColor=white)](https://pypi.org/project/mlx-mol-cluster/)
 [![MLX](https://img.shields.io/badge/MLX-0.31.0+-black?logo=apple&labelColor=gray)](https://github.com/ml-explore/mlx)
 
 # MLXMolCluster
@@ -26,9 +26,9 @@ pip install git+https://github.com/tlint101/MLXMolCluster.git
 ## Example
 The following is an example of clustering molecules using Butina on MLX.
 ```python
-# generate molecular fingerprints
-fp_gen = rdFingerprintGenerator.GetRDKitFPGenerator(fpSize=1024)
-rdkit_fps = [fp_gen.GetFingerprint(mol) for mol in mol_list]
+# generate molecular fingerprints. Can be done on multiple CPUs
+fp_gen = FPGenerator(smi_list)
+rdkit_fps = fp_gen.fingerprint(type='rdkit', nbits=1024, n_cpu=10)
 
 # convert to mlx arrays
 mlx_fp = fp_to_mlx(rdkit_fps)
