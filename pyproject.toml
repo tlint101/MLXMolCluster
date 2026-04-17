@@ -1,7 +1,7 @@
 [project]
 name = "mlx-mol-cluster"
-version = "0.1.0"
-description = ""
+version = "0.2.0"
+description = "Clustering molecules using Apple Silicon GPU"
 authors = [{ name = "Tony Eight Lin" }]
 license = "MIT"
 readme = "README.md"
