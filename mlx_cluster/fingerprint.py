@@ -43,7 +43,6 @@ class FPGenerator:
             Set the number of CPUs to use. Defaults to 5.
         :return:
         """
-        global fp
         if mols is None:
             mols = self.mols
         if mols is None and self.mols is None:
