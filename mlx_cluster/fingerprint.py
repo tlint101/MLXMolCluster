@@ -22,7 +22,7 @@ class FPGenerator:
             self.mols = None
 
     def fingerprint(self, mols: Optional[Union[list, np.array]] = None, type: str = "morgan", nbits: int = 1024,
-                    radius: int = 2, minPath: int = 1, maxPath=7, n_cpu: int = 5):
+                    radius: int = 2, minPath: int = 1, maxPath: int = 7, n_cpu: int = 5):
         """
         Generate a fingerprint for a molecule. There is an option for multithreading. Four types of fingerprints can be
         generated - 'morgan', 'rdkit', 'atompair' or 'AtomPair, and 'torsion'.
@@ -42,6 +42,7 @@ class FPGenerator:
         :param n_cpu: int
             Set the number of CPUs to use. Defaults to 5.
         :return:
+            A list of RDKit fingerprints, one per input molecule.
         """
         if mols is None:
             mols = self.mols
