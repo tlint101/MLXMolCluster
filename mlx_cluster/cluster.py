@@ -377,69 +377,332 @@ class KMeans:
         return mx.stack(centers)
 
 
-# todo test DBSCAN
-class DBSCAN:
-    def __init__(self, eps=0.5, min_samples=5, metric="euclidean", chunk_size=5_000):
-        self.eps = eps
+class HDBSCAN:
+    """
+    Hierarchical density-based clustering, in the spirit of sklearn's ``HDBSCAN``.
+
+    Builds a cluster hierarchy across all density levels and keeps the clusters that persist longest, so no
+    ``eps`` parameter is needed. Unlike :func:`butina`, which assigns every molecule, HDBSCAN labels points in
+    sparse regions as noise (``-1``).
+
+    Distances and core distances are computed on the GPU; the minimum spanning tree, hierarchy condensation and
+    cluster extraction run on the CPU.
+
+    If you compare against sklearn yourself, pass ``copy=True``: with ``metric='precomputed'`` sklearn defaults
+    to ``copy=False`` and modifies your distance matrix in place, so reusing one matrix across several calls
+    silently corrupts every result after the first.
+    """
+
+    def __init__(self, min_cluster_size: int = 5, min_samples: int = None, metric: str = 'tanimoto',
+                 chunk_size: int = 5000):
+        """
+        Initialize the HDBSCAN object.
+        :param min_cluster_size: int
+            The smallest group of molecules that counts as a cluster. Anything smaller becomes noise.
+        :param min_samples: int
+            Neighbor rank used for the core distance; higher values make the result more conservative and
+            produce more noise. Defaults to ``min_cluster_size``.
+        :param metric: str
+            Distance metric, either 'tanimoto' (for fingerprints) or 'euclidean'.
+        :param chunk_size: int
+            The number of rows processed at a time, to keep under GPU buffer limits.
+        """
+        if min_cluster_size < 2:
+            raise ValueError("min_cluster_size must be at least 2!")
+        if min_samples is not None and min_samples < 1:
+            raise ValueError("min_samples must be at least 1!")
+        if metric not in ('tanimoto', 'euclidean'):
+            raise ValueError("Metric must be either 'tanimoto' or 'euclidean'!")
+        self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
         self.metric = metric
         self.chunk_size = chunk_size
         self.labels_ = None
-        warnings.warn("WARNING: Class DBSCAN() not ready for prime time!")
 
     def fit(self, X: mx.array):
-        n_samples = X.shape[0]
-        # distance and masking
-        dist_matrix = self._compute_distances(X)
-        adj_matrix = dist_matrix <= self.eps  # mx.array (bool)
+        """
+        Compute the clustering.
+        :param X: mx.array
+            Molecular fingerprints, shape (N, nbits). For metric='tanimoto' these must hold 0/1 values.
+        :return:
+            self
+        """
+        if not isinstance(X, mx.array):
+            X = mx.array(X)
+        X = X.astype(mx.float32)
 
-        # core point detection
-        neighbor_counts = mx.sum(adj_matrix, axis=1)
-        is_core = neighbor_counts >= self.min_samples
+        n = X.shape[0]
+        min_samples = self.min_samples if self.min_samples is not None else self.min_cluster_size
+        if n < max(self.min_cluster_size, min_samples):
+            raise ValueError(f"Need at least {max(self.min_cluster_size, min_samples)} samples to cluster!")
 
-        # convert to np.array for calculations
-        adj_np = np.array(adj_matrix)
-        is_core_np = np.array(is_core)
-        self.labels_ = np.full(n_samples, -1)
-
-        cluster_id = 0
-        for i in range(n_samples):
-            if self.labels_[i] != -1 or not is_core_np[i]:
-                continue
-
-            self.labels_[i] = cluster_id
-            stack = [i]
-            while stack:
-                curr = stack.pop()
-                # get neighbors using boolean mask
-                neighbors = np.where(adj_np[curr])[0]
-                for neighbor in neighbors:
-                    if self.labels_[neighbor] == -1:
-                        self.labels_[neighbor] = cluster_id
-                        if is_core_np[neighbor]:
-                            stack.append(neighbor)
-            cluster_id += 1
+        distances = self._compute_distances(X)
+        core = self._core_distances(distances, min_samples)     # on GPU, from the float32 matrix
+        distances = distances.astype(np.float64)                # float64 makes the CPU MST below faster
+        linkage = self._single_linkage(self._mutual_reachability_mst(distances, core), n)
+        tree = self._condense_tree(linkage, n, self.min_cluster_size)
+        self.labels_ = self._extract_clusters(tree, self._cluster_stability(tree), n)
         return self
 
-    def _compute_distances(self, X: mx.array):
-        """vectorized distance calculation on mlx."""
-        if self.metric == "tanimoto":
-            return get_tanimoto(fps=X, chunk_size=self.chunk_size, output=True)
-        elif self.metric == "euclidean":
-            # optimized L2: sqrt(sum(x^2) + sum(y^2) - 2 * x.T * y)
-            sq_norms = mx.sum(X ** 2, axis=1, keepdims=True)
-            dist_sq = sq_norms + sq_norms.T - 2 * mx.matmul(X, X.T)
-            return mx.sqrt(mx.maximum(dist_sq, 0.0))
-        elif self.metric == "manhattan" or (self.metric == "minkowski" and self.p == 1):
-            # L1 Distance
-            return mx.sum(mx.abs(X[:, None, :] - X[None, :, :]), axis=-1)
-        elif self.metric == "cosine":
-            # cosine Distance = 1 - (A·B / (||A||*||B||))
-            norm = mx.sqrt(mx.sum(X ** 2, axis=1, keepdims=True))
-            similarity = mx.matmul(X, X.T) / (norm * norm.T + 1e-7)
-            return 1.0 - similarity
-        else:
-            raise ValueError(f"Metric '{self.metric}' is not supported in this MLX implementation.")
+    def fit_predict(self, X: mx.array) -> np.ndarray:
+        """
+        Compute the clustering and return the labels.
+        :param X: mx.array
+            Molecular fingerprints, shape (N, nbits).
+        :return:
+            A (N,) np.array of cluster labels, with -1 marking noise.
+        """
+        return self.fit(X).labels_
+
+    def _compute_distances(self, X: mx.array) -> np.ndarray:
+        """
+        Build the full distance matrix on the GPU.
+        :param X: mx.array
+            Molecular fingerprints, shape (N, nbits).
+        :return:
+            A square (N, N) np.array of distances.
+        """
+        if self.metric == 'tanimoto':
+            return get_tanimoto(X, chunk_size=self.chunk_size, output='matrix')
+        squared = mx.sum(X * X, axis=1, keepdims=True)
+        distances = mx.sqrt(mx.maximum(squared + squared.T - 2.0 * mx.matmul(X, X.T), 0.0))
+        mx.eval(distances)
+        return np.asarray(memoryview(distances)).copy()
+
+    @staticmethod
+    def _core_distances(distances: np.ndarray, min_samples: int) -> np.ndarray:
+        """
+        Find the distance from each point to its ``min_samples``-th nearest neighbour, the point itself
+        counting as the first.
+        :param distances: np.ndarray
+            Square (N, N) float32 distance matrix.
+        :param min_samples: int
+            Neighbour rank defining the core distance.
+        :return:
+            A (N,) float64 array of core distances.
+        """
+        ranked = mx.partition(mx.array(distances), min_samples - 1, axis=1)[:, min_samples - 1]
+        mx.eval(ranked)
+        return np.asarray(memoryview(ranked)).astype(np.float64)
+
+    @staticmethod
+    def _mutual_reachability_mst(distances: np.ndarray, core: np.ndarray) -> list:
+        """
+        Build a minimum spanning tree over the mutual reachability graph with Prim's algorithm.
+        :param distances: np.ndarray
+            Square (N, N) distance matrix.
+        :param core: np.ndarray
+            Core distances, shape (N,).
+        :return:
+            A list of (node_a, node_b, weight) edges, N-1 of them.
+        """
+        n = distances.shape[0]
+        in_tree = np.zeros(n, dtype=bool)
+        best = np.full(n, np.inf)
+        parent = np.full(n, -1, dtype=np.int64)
+        best[0] = 0.0
+        edges = []
+        for _ in range(n):
+            current = int(np.argmin(np.where(in_tree, np.inf, best)))
+            in_tree[current] = True
+            if parent[current] >= 0:
+                edges.append((int(parent[current]), current, float(best[current])))
+            reach = np.maximum(np.maximum(distances[current], core[current]), core)
+            better = (~in_tree) & (reach < best)
+            best[better] = reach[better]
+            parent[better] = current
+        return edges
+
+    @staticmethod
+    def _single_linkage(edges: list, n: int) -> np.ndarray:
+        """
+        Build a SciPy-style linkage matrix from MST edges by union-find.
+        :param edges: list
+            (node_a, node_b, weight) tuples from the MST.
+        :param n: int
+            Number of original points.
+        :return:
+            An (N-1, 4) array of (left, right, distance, size); internal nodes are numbered N, N+1, ...
+        """
+        edges = sorted(edges, key=lambda e: e[2])
+        parent = np.arange(2 * n - 1)
+        size = np.ones(2 * n - 1, dtype=np.int64)
+        current = np.arange(n)
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        linkage = np.zeros((n - 1, 4))
+        for k, (a, b, weight) in enumerate(edges):
+            ra, rb = find(current[a]), find(current[b])
+            new_node = n + k
+            linkage[k] = (ra, rb, weight, size[ra] + size[rb])
+            parent[ra] = parent[rb] = new_node
+            size[new_node] = size[ra] + size[rb]
+            current[a] = current[b] = new_node
+        return linkage
+
+    @staticmethod
+    def _subtree_points(linkage: np.ndarray, n: int, node: int) -> list:
+        """
+        Collect every original point beneath a linkage node.
+        :param linkage: np.ndarray
+            Linkage matrix from :meth:`_single_linkage`.
+        :param n: int
+            Number of original points.
+        :param node: int
+            Node id to descend from.
+        :return:
+            A list of point indices.
+        """
+        if node < n:
+            return [node]
+        stack, points = [node], []
+        while stack:
+            x = stack.pop()
+            if x < n:
+                points.append(x)
+            else:
+                stack.append(int(linkage[x - n, 0]))
+                stack.append(int(linkage[x - n, 1]))
+        return points
+
+    @staticmethod
+    def _condense_tree(linkage: np.ndarray, n: int, min_cluster_size: int) -> np.ndarray:
+        """
+        Condense the dendrogram: a child smaller than ``min_cluster_size`` falls out of its parent rather than
+        counting as a genuine split.
+        :param linkage: np.ndarray
+            Linkage matrix from :meth:`_single_linkage`.
+        :param n: int
+            Number of original points.
+        :param min_cluster_size: int
+            Smallest group that counts as a cluster.
+        :return:
+            A structured array with fields parent, child, lambda_val, child_size.
+        """
+        root = 2 * n - 2
+        relabel = np.zeros(2 * n - 1, dtype=np.int64)
+        relabel[root] = n
+        next_label = n + 1
+        ignore = np.zeros(2 * n - 1, dtype=bool)
+        rows = []
+
+        # Descending node id is a valid topological order: in a linkage matrix a node's children always have
+        # smaller ids than the node itself, so every parent is relabelled before its children are reached.
+        for node in range(root, n - 1, -1):
+            if ignore[node]:
+                continue
+            left, right = int(linkage[node - n, 0]), int(linkage[node - n, 1])
+            distance = linkage[node - n, 2]
+            lambda_val = np.inf if distance <= 0 else 1.0 / distance
+            left_size = 1 if left < n else int(linkage[left - n, 3])
+            right_size = 1 if right < n else int(linkage[right - n, 3])
+            left_big, right_big = left_size >= min_cluster_size, right_size >= min_cluster_size
+
+            if left_big and right_big:
+                for child, child_size in ((left, left_size), (right, right_size)):
+                    relabel[child] = next_label
+                    rows.append((relabel[node], next_label, lambda_val, child_size))
+                    next_label += 1
+                continue
+
+            if left_big or right_big:
+                keep, drop = (left, right) if left_big else (right, left)
+                relabel[keep] = relabel[node]
+                falling = [drop]
+            else:
+                falling = [left, right]
+
+            for child in falling:
+                for point in HDBSCAN._subtree_points(linkage, n, child):
+                    rows.append((relabel[node], point, lambda_val, 1))
+                stack = [child]
+                while stack:
+                    x = stack.pop()
+                    ignore[x] = True
+                    if x >= n:
+                        stack.append(int(linkage[x - n, 0]))
+                        stack.append(int(linkage[x - n, 1]))
+
+        return np.array(rows, dtype=[('parent', np.int64), ('child', np.int64),
+                                     ('lambda_val', float), ('child_size', np.int64)])
+
+    @staticmethod
+    def _cluster_stability(tree: np.ndarray) -> dict:
+        """
+        Measure the stability of each candidate cluster: how long its members persist past the cluster's own
+        birth.
+        :param tree: np.ndarray
+            Condensed tree from :meth:`_condense_tree`.
+        :return:
+            A dict mapping cluster id to stability.
+        """
+        births = {child: lambda_val for _, child, lambda_val, size in tree if size > 1}
+        clusters = sorted(set(tree['parent'].tolist()))
+        if clusters:
+            births[min(clusters)] = 0.0
+        stability = {}
+        for cluster in clusters:
+            rows = tree['parent'] == cluster
+            birth = births.get(cluster, 0.0)
+            stability[cluster] = float(np.sum((tree['lambda_val'][rows] - birth) * tree['child_size'][rows]))
+        return stability
+
+    @staticmethod
+    def _extract_clusters(tree: np.ndarray, stability: dict, n: int) -> np.ndarray:
+        """
+        Select the final clusters by excess of mass: keep a cluster when it is more stable than its descendants
+        combined.
+        :param tree: np.ndarray
+            Condensed tree from :meth:`_condense_tree`.
+        :param stability: dict
+            Cluster stabilities from :meth:`_cluster_stability`.
+        :param n: int
+            Number of original points.
+        :return:
+            A (N,) array of labels, -1 for noise.
+        """
+        labels = np.full(n, -1, dtype=np.int64)
+        if not stability:
+            return labels
+
+        cluster_tree = tree[tree['child_size'] > 1]
+        nodes = sorted(stability.keys(), reverse=True)
+        root = min(nodes)
+        selected = {node: True for node in nodes}
+
+        for node in nodes:
+            if node == root:
+                continue
+            children = cluster_tree['child'][cluster_tree['parent'] == node]
+            below = float(sum(stability[c] for c in children))
+            if below > stability[node]:
+                selected[node] = False
+                stability[node] = below
+            else:
+                stack = children.tolist()
+                while stack:
+                    x = stack.pop()
+                    selected[x] = False
+                    stack.extend(cluster_tree['child'][cluster_tree['parent'] == x].tolist())
+        selected[root] = False
+
+        for label, cluster in enumerate(sorted(c for c in selected if selected[c])):
+            stack, points = [cluster], []
+            while stack:
+                x = stack.pop()
+                rows = tree['parent'] == x
+                for child, child_size in zip(tree['child'][rows], tree['child_size'][rows]):
+                    if child_size == 1:
+                        points.append(int(child))
+                    else:
+                        stack.append(int(child))
+            labels[points] = label
+        return labels
 
 
 # class MLXSpectralClustering:
